@@ -12,6 +12,7 @@ import io
 import os
 import re
 import socket
+import sqlite3
 import tarfile
 import tempfile
 import time
@@ -709,6 +710,127 @@ class TestCardMailbox(unittest.TestCase):
         self.assertEqual(mac, "00-18-56-12-34-58")
 
 
+class TestReaderOnlyCard(unittest.TestCase):
+    """키 없는 '리더 전용' 카드: 자동 가져오기용으로 등록되고, 무선은 안전히 거부."""
+
+    def test_config_stores_empty_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "cards.json")
+            c = Config(p)
+            c.add_or_update_card(MAC, "", name="리더 전용")   # 키 없이 등록
+            c.save()
+            c2 = Config.load(p)
+            card = c2.get_card(MAC)
+            self.assertIsNotNone(card)                         # 등록됨 → 자동 가져오기 게이트 통과
+            self.assertEqual(card["uploadkey"], "")
+            self.assertEqual(card["name"], "리더 전용")
+
+    def test_empty_key_card_wifi_safely_rejected(self):
+        """빈 키 카드가 무선으로 붙어도 크래시 없이 credential 불일치로 거부(403)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(os.path.join(tmp, "cards.json"))
+            cfg.port = 0
+            cfg.default_folder = os.path.join(tmp, "down")
+            cfg.add_or_update_card(MAC, "", name="리더 전용")   # 키 없음
+            srv = EyeFiServer(cfg, on_event=lambda k, i: None)
+            srv.spool_dir = os.path.join(tmp, "spool")
+            os.makedirs(srv.spool_dir, exist_ok=True)
+            port = srv.server_address[1]
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                mac_hex = MAC.replace("-", "")
+                # StartSession (크래시 없이 응답)
+                ss = ('<?xml version="1.0"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="%s"><SOAP-ENV:Body>'
+                      '<StartSession xmlns="%s"><macaddress>%s</macaddress><cnonce>%s</cnonce>'
+                      "<transfermode>546</transfermode><transfermodetimestamp>0</transfermodetimestamp>"
+                      "</StartSession></SOAP-ENV:Body></SOAP-ENV:Envelope>"
+                      ) % (proto.SOAP_NS, proto.EYEFI_NS, mac_hex, "dd" * 16)
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/soap/eyefilm/v1",
+                                             data=ss.encode())
+                req.add_header("Content-Type", "text/xml")
+                req.add_header("SOAPAction", '"urn:StartSession"')
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    self.assertIn(b"StartSessionResponse", r.read())
+                # GetPhotoStatus with any credential → 403 (빈 키라 절대 일치 안 함)
+                gs = ('<GetPhotoStatus xmlns="%s"><macaddress>%s</macaddress>'
+                      "<credential>%s</credential><filename>X.JPG.tar</filename>"
+                      "<filesize>10</filesize></GetPhotoStatus>"
+                      ) % (proto.EYEFI_NS, mac_hex, "0" * 32)
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/soap/eyefilm/v1",
+                                             data=gs.encode())
+                req.add_header("Content-Type", "text/xml")
+                req.add_header("SOAPAction", '"urn:GetPhotoStatus"')
+                with self.assertRaises(urllib.error.HTTPError) as cm:
+                    urllib.request.urlopen(req, timeout=5)
+                self.assertEqual(cm.exception.code, 403)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+
+class TestKeyRecovery(unittest.TestCase):
+    """구펌웨어로 업로드키를 못 읽는 카드: 예전 Eye-Fi 설정에서 복구."""
+
+    def test_extract_from_xml_settings(self):
+        from EyeFiReceiver import key_recovery as kr
+        xml = (
+            '<Config version="2.1">'
+            '<Card><MacAddress>0018561234 60</MacAddress>'
+            '<UploadKey>33333333333333333333333333333333</UploadKey></Card>'
+            '<Card><MacAddress>00-18-56-99-99-99</MacAddress>'
+            '<UploadKey>ffffffffffffffffffffffffffffffff</UploadKey></Card>'
+            '</Config>')
+        # 대상 카드만 정확히
+        self.assertEqual(kr.extract_from_text(xml, "00-18-56-12-34-60"),
+                         "33333333333333333333333333333333")
+        self.assertEqual(kr.extract_from_text(xml, "00-18-56-99-99-99"),
+                         "ffffffffffffffffffffffffffffffff")
+        # 없는 MAC → None
+        self.assertIsNone(kr.extract_from_text(xml, "00-18-56-aa-bb-cc"))
+
+    def test_extract_from_sqlite(self):
+        from EyeFiReceiver import key_recovery as kr
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "client.db")
+            con = sqlite3.connect(p)
+            con.execute("CREATE TABLE o_devices (o_mac_address TEXT, o_upload_key TEXT, note TEXT)")
+            con.execute("INSERT INTO o_devices VALUES (?,?,?)",
+                        ("00-18-56-12-34-60", "33333333333333333333333333333333", "clinic"))
+            con.execute("INSERT INTO o_devices VALUES (?,?,?)",
+                        ("0018561234aa", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "x"))
+            con.commit(); con.close()
+            self.assertEqual(kr.extract_from_sqlite(p, "00-18-56-12-34-60"),
+                             "33333333333333333333333333333333")
+            self.assertEqual(kr.extract_from_sqlite(p, "00:18:56:12:34:aa"),
+                             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            self.assertIsNone(kr.extract_from_sqlite(p, "00-18-56-00-00-00"))
+
+    def test_recover_from_file_dispatch(self):
+        from EyeFiReceiver import key_recovery as kr
+        with tempfile.TemporaryDirectory() as d:
+            xp = os.path.join(d, "Settings.xml")
+            with open(xp, "w", encoding="utf-8") as f:
+                f.write('<Config><MacAddress>00-18-56-12-34-60</MacAddress>'
+                        '<UploadKey>33333333333333333333333333333333</UploadKey></Config>')
+            self.assertEqual(kr.recover_from_file(xp, "00-18-56-12-34-60"),
+                             "33333333333333333333333333333333")
+
+    def test_recover_upload_key_prefers_extra_file(self):
+        from EyeFiReceiver import key_recovery as kr
+        with tempfile.TemporaryDirectory() as d:
+            xp = os.path.join(d, "Settings.xml")
+            with open(xp, "w", encoding="utf-8") as f:
+                f.write('<Config><MacAddress>00-18-56-12-34-60</MacAddress>'
+                        '<UploadKey>33333333333333333333333333333333</UploadKey></Config>')
+            hit = kr.recover_upload_key("00-18-56-12-34-60", extra_files=[xp])
+            self.assertIsNotNone(hit)
+            key, src = hit
+            self.assertEqual(key, "33333333333333333333333333333333")
+            self.assertEqual(src, xp)
+            # 없는 카드 → None (기본 위치에 없다고 가정)
+            self.assertIsNone(kr.recover_upload_key("00-18-56-de-ad-00", extra_files=[xp]))
+
+
 class TestFreshCardBootstrap(unittest.TestCase):
     """공장 초기 카드 지원 — 시퀀스 가드·메일박스 부트스트랩·판별 (실카드 없이 검증)."""
 
@@ -851,8 +973,8 @@ class TestFreshCardBootstrap(unittest.TestCase):
             text = cm.collect_diagnostics(app_version="9.9.9")
             self.assertIn("00-18-56-12-34-5b", text)
             self.assertIn("5.0 Jan 1 2011", text)
-            self.assertIn("5.2010", text)               # 해결책 안내에 등장
-            self.assertIn("X2 Utility", text)
+            self.assertIn("5.2010", text)               # 참고 안내에 등장
+            self.assertIn("복구", text)                  # 키 복구를 권장 해결책으로 안내
         finally:
             (cm._is_removable, cm._volume_label, cm._read_raw, cm._write_raw,
              cm.find_card_mount, cm.CardMailbox) = orig

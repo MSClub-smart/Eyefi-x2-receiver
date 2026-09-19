@@ -19,7 +19,7 @@ Write-Host ("59278 수신 중  : {0}" -f $whom) -ForegroundColor $(if($owner -ne
 Write-Host ("우리앱 pythonw : {0}" -f $(if($py){"실행중 (PID $($py.Id -join ','))"}else{"꺼짐"}))
 Write-Host ("공식앱          : {0}" -f $(if($off){"실행중 (PID $($off.Id))"}else{"꺼짐"}))
 
-$today = Join-Path "E:\Eye-Fi Down Folder" (Get-Date -Format "yyyy-MM-dd")
+$today = Join-Path "C:\Eye-Fi Photos" (Get-Date -Format "yyyy-MM-dd")
 $cnt = if (Test-Path $today) { (Get-ChildItem $today -File -EA SilentlyContinue).Count } else { 0 }
 Write-Host ("오늘 받은 사진 : {0}장  ({1})" -f $cnt, $today)
 

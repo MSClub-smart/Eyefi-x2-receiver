@@ -294,7 +294,8 @@ class ReceiverGUI:
                              values=(mac, info.get("name", ""), info.get("uploadkey", ""),
                                      info.get("folder", "(기본)")))
 
-    def _card_dialog(self, mac="", name="", uploadkey="", folder="", firmware="", exposes_key=None):
+    def _card_dialog(self, mac="", name="", uploadkey="", folder="", firmware="", exposes_key=None,
+                     allow_empty_key=False):
         dlg = tk.Toplevel(self.root)
         dlg.title("카드 정보")
         dlg.transient(self.root)
@@ -317,6 +318,14 @@ class ReceiverGUI:
                                if exposes_key is not None else None)
             fw_lbl.grid(row=r, column=1, sticky="w", padx=8, pady=4)
             r += 1
+        # 키를 못 읽은 카드: 비워두고 등록하면 '리더 전용'(무선 X, 꽂으면 자동 가져오기 O)
+        if allow_empty_key:
+            hint = ("※ 업로드키를 비워두고 확인하면 '리더 전용'으로 등록됩니다.\n"
+                    "   무선 자동전송은 안 되지만, 카드를 꽂으면 사진을 자동으로\n"
+                    "   가져옵니다(중복은 자동 제외). 나중에 키를 알면 여기에 넣으세요.")
+            ttk.Label(dlg, text=hint, foreground="#555555", justify="left").grid(
+                row=r, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 4))
+            r += 1
         ttk.Label(dlg, text="저장폴더(비우면 기본)").grid(row=r, column=0, sticky="w", padx=8, pady=4)
         fvar = tk.StringVar(value=folder)
         ttk.Entry(dlg, textvariable=fvar, width=44).grid(row=r, column=1, padx=8, pady=4)
@@ -326,8 +335,15 @@ class ReceiverGUI:
         def ok():
             m = normalize_mac(ent["MAC (00-18-56-..)"].get())
             uk = ent["UploadKey (32 hex)"].get().strip().lower()
-            if len(m.replace("-", "")) != 12 or len(uk) != 32:
-                messagebox.showerror("입력 오류", "MAC 12자리, UploadKey 32자리 hex 를 확인하세요.")
+            if len(m.replace("-", "")) != 12:
+                messagebox.showerror("입력 오류", "MAC 12자리를 확인하세요.")
+                return
+            if uk:
+                if len(uk) != 32:
+                    messagebox.showerror("입력 오류", "UploadKey 는 32자리 hex 여야 합니다.")
+                    return
+            elif not allow_empty_key:
+                messagebox.showerror("입력 오류", "UploadKey 32자리 hex 를 입력하세요.")
                 return
             result.update(mac=m, name=ent["이름"].get().strip(), uploadkey=uk, folder=fvar.get().strip())
             dlg.destroy()
@@ -384,43 +400,112 @@ class ReceiverGUI:
         self._append(f"[읽음] {data['mac']} ({data.get('ssid','')}) — 등록 창을 확인하세요")
         fw = data.get("firmware", "")
         key_was_empty = not data.get("uploadkey")
+        uploadkey = data.get("uploadkey", "")
+        recovered_key = False
         if key_was_empty:
             fwx = fw or "?"
             self._append(f"[경고] 카드에서 업로드키를 읽지 못했습니다(빈 응답) — "
                          f"FW={fwx} raw={data.get('uploadkey_raw','')[:40]}")
             if data.get("key_hidden_by_fw"):
                 self._append("[안내] 카드 펌웨어가 5.2 미만이라 업로드키가 숨겨집니다"
-                             " — Eye-Fi X2 Utility 로 5.2010 업데이트 후 재시도하세요")
+                             " — 예전 Eye-Fi 설정에서 키 복구를 시도합니다")
                 messagebox.showwarning(
                     "업로드키 없음 — 카드 펌웨어 구버전",
                     f"카드 펌웨어가 '{fwx}' 입니다.\n\n"
                     "Eye-Fi X2 카드는 펌웨어 5.0 이하에서는 업로드키가 카드에 있어도\n"
                     "읽히지 않습니다(빈 값). 펌웨어 5.2010 이상에서만 읽을 수 있습니다.\n\n"
-                    "해결: 공식 'Eye-Fi X2 Utility' 로 이 카드의 펌웨어를 업데이트한 뒤\n"
-                    "다시 '카드를 앱에 등록' 을 눌러 주세요.\n\n"
-                    "잠시 후 진단 파일을 자동으로 만들어 폴더를 열어드립니다.")
-            else:
-                messagebox.showwarning(
-                    "업로드키 없음",
-                    "카드가 업로드키에 빈 값을 돌려줬습니다.\n"
-                    "잠시 후 진단 파일을 자동으로 만들어 폴더를 열어드립니다.\n"
-                    "그 파일을 개발자에게 보내주세요.")
+                    "이 카드를 예전에 공식 Eye-Fi 앱으로 쓴 적이 있으면,\n"
+                    "그 설정 파일에서 업로드키를 찾을 수 있습니다.\n"
+                    "이어서 키 복구를 시도하겠습니다.")
+            # ★ 키 복구: 이 PC의 예전 Eye-Fi 설정 자동검색 → 없으면 파일 직접 선택
+            found = self._try_recover_key(data["mac"])
+            if found:
+                uploadkey = found
+                recovered_key = True
+
         exposes = None
         if fw and fw != "?":
             from .card_mailbox import firmware_exposes_upload_key
             exposes = firmware_exposes_upload_key(fw)
             self._append(f"[펌웨어] {data['mac']} = '{fw}' — 업로드키 {'읽기 가능' if exposes else '숨김(구펌웨어)'}")
         r = self._card_dialog(mac=data["mac"], name=data.get("ssid", ""),
-                              uploadkey=data.get("uploadkey", ""),
-                              firmware=fw if fw != "?" else "", exposes_key=exposes)
+                              uploadkey=uploadkey,
+                              firmware=fw if fw != "?" else "", exposes_key=exposes,
+                              allow_empty_key=key_was_empty)
         if r:
             self.config.add_or_update_card(r["mac"], r["uploadkey"], r["name"], r["folder"])
             self.config.save()
             self._refresh_cards()
-            self._append(f"[등록] {r['mac']} 저장 완료")
-        elif key_was_empty:
-            # 등록 실패(키 없음) → 진단 파일을 자동으로 뽑아 폴더 열고 개발자 공유 안내
+            if r["uploadkey"]:
+                self._append(f"[등록] {r['mac']} 저장 완료" + (" (키 복구됨)" if recovered_key else ""))
+            else:
+                # 리더 전용 등록: 무선은 안 되지만 카드 꽂으면 자동 가져오기(중복 제외) 동작
+                self._append(f"[등록] {r['mac']} 리더 전용 등록 — 카드를 꽂으면 사진을 "
+                             f"자동으로 가져옵니다(중복 자동 제외, 무선 전송은 없음)")
+                drive = (data.get("drive") or "").rstrip("\\/:")
+                if drive and os.path.isdir(os.path.join(drive + ":\\", "DCIM")) and not self._importing:
+                    self._append("[리더] 지금 꽂힌 카드에서 바로 가져옵니다…")
+                    self._run_reader_import(drive + ":\\")
+        elif key_was_empty and not recovered_key:
+            # 복구도 등록도 안 함 → 진단 파일을 자동으로 뽑아 폴더 열고 개발자 공유 안내
             self._save_diagnostics(auto=True)
+
+    def _try_recover_key(self, mac: str) -> str:
+        """구펌웨어로 업로드키를 못 읽는 카드: 예전 공식 Eye-Fi 설정에서 키를 복구.
+        ① 이 PC의 알려진 위치 자동검색 → ② 없으면 사용자가 설정 파일(Settings.xml/client.db)
+        을 직접 선택. 찾으면 32자리 키 문자열, 못 찾으면 빈 문자열."""
+        from . import key_recovery
+        self._append("업로드키 복구 시도 중… (예전 Eye-Fi 설정 검색)")
+        self.root.config(cursor="watch")
+        try:
+            hit = key_recovery.recover_upload_key(mac)
+        except Exception as e:
+            hit = None
+            self._append(f"[복구] 자동검색 오류: {e}")
+        finally:
+            self.root.config(cursor="")
+        if hit:
+            key, src = hit
+            self._append(f"[복구] 업로드키를 찾았습니다 (출처: {src})")
+            messagebox.showinfo("업로드키 복구됨",
+                                "예전 Eye-Fi 설정에서 이 카드의 업로드키를 찾았습니다.\n"
+                                f"출처: {src}\n\n등록 창에 자동으로 채워집니다.")
+            return key
+        # 자동검색 실패 → 파일 직접 선택 제안
+        if not messagebox.askyesno(
+                "업로드키 자동 복구 실패",
+                "이 PC에서는 예전 Eye-Fi 설정을 찾지 못했습니다.\n\n"
+                "이 카드를 예전에 공식 Eye-Fi 앱(Eye-Fi Center / X2 Utility)으로\n"
+                "쓰던 PC가 있다면, 그 PC의 설정 파일을 여기로 복사해 선택하면\n"
+                "키를 찾을 수 있습니다.\n\n"
+                "  • Settings.xml  (보통 %APPDATA%\\Eye-FiX2\\ 안)\n"
+                "  • client.db / *.sqlite  (Eye-Fi Center 데이터)\n\n"
+                "지금 설정 파일을 선택하시겠습니까?"):
+            return ""
+        path = filedialog.askopenfilename(
+            title="Eye-Fi 설정 파일 선택 (Settings.xml / client.db)",
+            filetypes=[("Eye-Fi 설정", "*.xml *.db *.sqlite *.sqlite3"), ("모든 파일", "*.*")])
+        if not path:
+            return ""
+        self.root.config(cursor="watch")
+        try:
+            key = key_recovery.recover_from_file(path, mac)
+        except Exception as e:
+            key = None
+            self._append(f"[복구] 파일 파싱 오류: {e}")
+        finally:
+            self.root.config(cursor="")
+        if key and len(key) == 32:
+            self._append(f"[복구] 선택한 파일에서 업로드키를 찾았습니다 ({os.path.basename(path)})")
+            messagebox.showinfo("업로드키 복구됨",
+                                "선택한 파일에서 이 카드의 업로드키를 찾았습니다.\n"
+                                "등록 창에 자동으로 채워집니다.")
+            return key
+        self._append("[복구] 선택한 파일에서 이 카드의 키를 찾지 못했습니다")
+        messagebox.showwarning("복구 실패",
+                               "선택한 파일에서 이 카드(MAC)의 업로드키를 찾지 못했습니다.\n"
+                               "다른 설정 파일을 시도하거나, 진단 파일을 개발자에게 보내주세요.")
+        return ""
 
     def _check_firmware(self):
         """리더의 카드 펌웨어 버전을 읽어 '키 읽기 가능 여부'와 함께 보여준다.

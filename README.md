@@ -32,6 +32,12 @@ reverse-engineered and are re-implemented from scratch here.
   mailbox when a camera format has wiped it.
 - **Firmware-aware** — reads the card firmware and, when an older firmware hides the
   upload key, explains exactly what's happening and what to do (see Troubleshooting).
+- **Upload-key recovery** — if the card's firmware hides its key, the app searches an
+  old Eye-Fi Center / X2 Utility install (Settings.xml, client.db) for the saved
+  key, or lets you point at a config file copied from another PC.
+- **Reader-only cards** — a card whose key can't be recovered can still be registered
+  with no key: inserting it then auto-imports its photos (duplicates skipped), even
+  though wireless transfer isn't possible for it.
 - **One-click diagnostics** — export a full card report (firmware, tokens, verdict)
   to a text file for troubleshooting.
 - **Tray app** — live thumbnails of incoming photos, transfer pop-ups, optional
@@ -93,17 +99,21 @@ physically on the card. This is a **firmware** quirk, not a broken card:
 - Firmware **5.2010 (Aug 2013) and newer** return the 32-character key normally.
 
 The app reads the firmware and tells you which case you're in (**🔎 Check firmware**).
-If the key is hidden, options are:
+When the key is hidden, the app tries to help in order:
 
-- Enter the key manually if you already have it (e.g. from an old Eye-Fi Center
-  install's `Settings.xml`, where activated cards' keys were stored), or
-- Update the card's firmware to 5.2010 with the official Eye-Fi X2 Utility, if you
-  can still run it.
+1. **Recover the key** — on **🔑 Register card** it automatically searches this PC for
+   an old Eye-Fi Center / X2 Utility install (`Settings.xml`, `client.db`) that saved
+   this card's key. If the card was set up on another PC, copy that config file over
+   and pick it in the dialog. Found → the key is filled in and wireless works again.
+2. **Reader-only card** — if the key can't be recovered, register the card with the
+   key left blank. Wireless stays unavailable, but inserting the card then
+   **auto-imports its photos** (duplicates skipped) — a fast, no-key workflow.
+3. Updating the firmware to 5.2010 would also expose the key, but Eye-Fi's update
+   server is gone, so this is generally no longer possible.
 
-Either way, once the receiver has the correct upload key, an old-firmware card
-transfers photos exactly like any other — the firmware only affects *reading* the
-key, not the transfer itself. If you're stuck, use **🩺 Diagnostics** to export a
-report and open an issue.
+The firmware only affects *reading* the key, not the transfer itself: once the
+receiver has the correct key, an old-firmware card transfers like any other. Use
+**🩺 Diagnostics** to export a report if you need help.
 
 ## Build a Windows installer
 
@@ -118,6 +128,7 @@ EyeFiReceiver/
   eyefi_protocol.py   credential handshake, integrity digest, multipart/tar parsing
   card_mailbox.py     direct card communication (register / firmware / Wi-Fi), no DLL
   card_reader.py      card read helper (+ diagnostics export)
+  key_recovery.py     recover a hidden upload key from an old Eye-Fi install
   card_wifi.py        card Wi-Fi query/set
   reader_import.py    direct import from a card reader, with a de-dup ledger
   gui.py              Tkinter window + system tray
