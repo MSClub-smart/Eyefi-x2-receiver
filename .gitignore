@@ -1,0 +1,23 @@
+# Python / build artifacts
+__pycache__/
+*.pyc
+build/
+dist/
+installer/Output/
+*.zip
+
+# Per-PC runtime data (never commit — contains local card keys & paths)
+EyeFiReceiver/cards.json
+EyeFiReceiver/receiver.log
+EyeFiReceiver/spool/
+EyeFiReceiver/received_ledger.json
+EyeFiReceiver/captures/
+EyeFiReceiver/_live.log
+EyeFiReceiver/_live.err
+
+# Local diagnostics / monitoring output
+Network-Diagnostics/
+delay-logs/
+
+# Large official utility (not redistributed)
+eyefix2utility.exe

@@ -1,0 +1,9 @@
+# Normalize line endings; keep Windows scripts CRLF.
+* text=auto
+*.py   text
+*.md   text
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+*.ico  binary
+*.tar.gz binary
