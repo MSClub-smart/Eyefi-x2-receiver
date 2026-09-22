@@ -788,6 +788,37 @@ class TestKeyRecovery(unittest.TestCase):
         # 없는 MAC → None
         self.assertIsNone(kr.extract_from_text(xml, "00-18-56-aa-bb-cc"))
 
+    def test_xml_empty_key_does_not_grab_neighbor(self):
+        """★회귀: 대상 카드의 UploadKey 가 비면 None — 옆 카드 키나 DownsyncKey 를
+        잘못 집으면 안 됨(실사례: 카드 10-24-76 빈 키인데 옆 카드 DownsyncKey 오인)."""
+        from EyeFiReceiver import key_recovery as kr
+        xml = ('<Config version="2.0"><Cards>'
+               '<Card MacAddress="00-18-56-12-34-61">'
+               '<UploadKey>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</UploadKey>'
+               '<DownsyncKey>bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</DownsyncKey></Card>'
+               '<Card MacAddress="00-18-56-12-34-62">'
+               '<UploadKey></UploadKey><DownsyncKey></DownsyncKey></Card>'
+               '</Cards></Config>')
+        # 빈 키 카드 → None (bbbb DownsyncKey 도, aaaa 옆카드 키도 아님)
+        self.assertIsNone(kr.extract_from_text(xml, "00-18-56-12-34-62"))
+        # 채워진 카드 → UploadKey(aaaa), DownsyncKey(bbbb) 아님
+        self.assertEqual(kr.extract_from_text(xml, "00-18-56-12-34-61"),
+                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+    def test_sqlite_prefers_upload_key_column(self):
+        """sqlite: upload 키 컬럼 우선, downsync 컬럼은 제외."""
+        from EyeFiReceiver import key_recovery as kr
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.db")
+            con = sqlite3.connect(p)
+            con.execute("CREATE TABLE o_devices (o_mac_address TEXT, o_downsync_key TEXT, o_upload_key TEXT)")
+            con.execute("INSERT INTO o_devices VALUES (?,?,?)",
+                        ("00-18-56-12-34-61", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+            con.commit(); con.close()
+            self.assertEqual(kr.extract_from_sqlite(p, "00-18-56-12-34-61"),
+                             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
     def test_extract_from_sqlite(self):
         from EyeFiReceiver import key_recovery as kr
         with tempfile.TemporaryDirectory() as d:

@@ -3,7 +3,7 @@
 ; 전제: 먼저 PyInstaller 빌드(dist\EyeFiReceiver\) 가 있어야 함.
 
 #define AppName "Eye-Fi Receiver"
-#define AppVer "1.1.7"
+#define AppVer "1.1.8"
 ; AppVer 는 EyeFiReceiver\__init__.py 의 __version__ 과 맞출 것
 #define AppPublisher "Minsik Choi"
 #define AppContact "msclub@naver.com (카카오톡 ID: msclub77)"
